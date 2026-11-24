@@ -11,7 +11,7 @@ const redirectRoutes = require('./routes/redirect');
 
 const app = express();
 
-// Enable CORS
+// Enable CORS for all origins
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -22,34 +22,32 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/qrcodes', qrcodeRoutes);
-
-// Dynamic redirection route: /r/:shortCode
-app.use('/r', redirectRoutes);
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    platform: process.env.VERCEL ? 'vercel' : 'node',
-    timestamp: new Date().toISOString() 
-  });
+// Health check endpoint (matches both /api/health and /health)
+app.get(['/api/health', '/health', '/api', '/'], (req, res, next) => {
+  if (req.path === '/' && !process.env.VERCEL) {
+    return next(); // Let static handler handle root in local mode
+  }
+  if (req.path === '/api/health' || req.path === '/health' || req.path === '/api') {
+    return res.json({ 
+      status: 'ok', 
+      platform: process.env.VERCEL ? 'vercel' : 'node',
+      timestamp: new Date().toISOString() 
+    });
+  }
+  next();
 });
 
+// API Routes: mount both /api/xxx and /xxx to handle Vercel proxying
+app.use(['/api/auth', '/auth'], authRoutes);
+app.use(['/api/qrcodes', '/qrcodes'], qrcodeRoutes);
+
+// Dynamic redirection route: /r/:shortCode
+app.use(['/api/r', '/r'], redirectRoutes);
+
 // Serve built frontend if dist folder exists (local mode)
-const clientDistPath = path.join(__dirname, '..', '..', 'client', 'dist');
+const clientDistPath = path.join(__dirname, '..', '..', 'dist');
 if (require('fs').existsSync(clientDistPath)) {
   app.use(express.static(clientDistPath));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/r')) return next();
-    const indexPath = path.join(clientDistPath, 'index.html');
-    if (require('fs').existsSync(indexPath)) {
-      return res.sendFile(indexPath);
-    }
-    next();
-  });
 }
 
 module.exports = app;
