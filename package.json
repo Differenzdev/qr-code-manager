@@ -4,7 +4,7 @@
   "description": "Full-stack QR Code Management System with persistent URL association",
   "private": true,
   "scripts": {
-    "build": "cd client && npm install && npm run build",
+    "build": "npm --prefix client install --include=dev && npm --prefix client run build",
     "start": "node server/src/index.js",
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev"
