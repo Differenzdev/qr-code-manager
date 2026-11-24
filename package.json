@@ -1,0 +1,23 @@
+{
+  "name": "qr-code-manager",
+  "version": "1.0.0",
+  "description": "Full-stack QR Code Management System with persistent URL association",
+  "private": true,
+  "scripts": {
+    "build": "cd client && npm install && npm run build",
+    "start": "node server/src/index.js",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.34.4",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongodb": "^6.14.0",
+    "qrcode": "^1.5.4",
+    "uuid": "^11.1.0"
+  }
+}

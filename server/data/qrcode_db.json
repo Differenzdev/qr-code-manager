@@ -1,0 +1,81 @@
+{
+  "users": [
+    {
+      "id": "user_demo_001",
+      "name": "Alex Johnson",
+      "email": "demo@example.com",
+      "passwordHash": "$2b$10$kch43FY8DuBuasodW7ipxuqapBoCg0CYbloCGy0MDxf7ozZoGWJDi",
+      "createdAt": "2026-11-24T07:16:54.735Z"
+    }
+  ],
+  "qrcodes": [
+    {
+      "id": "qr_6ba0199d-7",
+      "userId": "user_demo_001",
+      "title": "Gemini",
+      "description": "",
+      "targetUrl": "https://gemini.google.com/u/1/app/0b2b5053047e645c?pageId=none&pli=1",
+      "shortCode": "dw1ar7",
+      "qrType": "direct",
+      "category": "Marketing",
+      "tags": [],
+      "designConfig": {
+        "fgColor": "#1e3a8a",
+        "bgColor": "#ffffff",
+        "level": "M",
+        "margin": 2,
+        "size": 256
+      },
+      "scanCount": 0,
+      "createdAt": "2026-11-24T07:56:35.105Z",
+      "updatedAt": "2026-11-24T07:56:35.105Z"
+    },
+    {
+      "id": "qr_c304ca67-0",
+      "userId": "user_demo_001",
+      "title": "Monginis",
+      "description": "",
+      "targetUrl": "https://gemini.google.com/u/1/app/0b2b5053047e645c?pageId=none&pli=1",
+      "shortCode": "yrz6od",
+      "qrType": "direct",
+      "category": "Marketing",
+      "tags": [],
+      "designConfig": {
+        "fgColor": "#000000",
+        "bgColor": "#ffffff",
+        "level": "M",
+        "margin": 2,
+        "size": 256
+      },
+      "scanCount": 0,
+      "createdAt": "2026-11-24T07:33:29.559Z",
+      "updatedAt": "2026-11-24T07:55:06.328Z"
+    }
+  ],
+  "scans": [
+    {
+      "id": "scan_1795505231152_8c2j",
+      "qrCodeId": "qr_b8f18e9d-5",
+      "shortCode": "4orw6h",
+      "timestamp": "2026-11-24T07:27:11.152Z",
+      "userAgent": "node",
+      "ip": "::1"
+    },
+    {
+      "id": "scan_1795505231246_691y",
+      "qrCodeId": "qr_b8f18e9d-5",
+      "shortCode": "4orw6h",
+      "timestamp": "2026-11-24T07:27:11.246Z",
+      "userAgent": "node",
+      "ip": "::1"
+    },
+    {
+      "id": "scan_1795505338043_g0iw",
+      "qrCodeId": "qr_eb91d3ea-3",
+      "shortCode": "2yliwo",
+      "timestamp": "2026-11-24T07:28:58.043Z",
+      "userAgent": "QR-Scanner-App/2.4",
+      "ip": "::1"
+    }
+  ]
+}
