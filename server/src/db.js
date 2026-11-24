@@ -2,23 +2,14 @@ const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 
-// Support cloud providers if environment variables are set
-let redisClient = null;
-if (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL) {
-  try {
-    const { Redis } = require('@upstash/redis');
-    redisClient = new Redis({
-      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
-      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
-    });
-    console.log('[DB] Configured cloud Upstash / Vercel KV storage.');
-  } catch (err) {
-    console.warn('[DB] Upstash initialization warning:', err.message);
-  }
+let vercelBlob = null;
+try {
+  vercelBlob = require('@vercel/blob');
+} catch (e) {
+  // Not in blob environment
 }
 
-// Data directory path: if in serverless environment, use /tmp or fallback
-const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME;
+const isServerless = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const DATA_DIR = isServerless 
   ? path.join('/tmp', 'qr_data') 
   : path.join(__dirname, '..', 'data');
@@ -29,19 +20,18 @@ try {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-} catch (e) {
-  // Read-only filesystem fallback
-}
+} catch (e) {}
 
 // In-memory state backed by persistent store
 let db = {
+  isInitialized: true,
   users: [],
   qrcodes: [],
   scans: []
 };
 
-// Seed default demo user and sample QR codes
-function getInitialSeed() {
+// Clean initial data - ONLY real user data, ZERO dummy codes
+function getCleanSeed() {
   const salt = bcrypt.genSaltSync(10);
   const demoPasswordHash = bcrypt.hashSync('demo1234', salt);
 
@@ -53,7 +43,8 @@ function getInitialSeed() {
     createdAt: new Date().toISOString()
   };
 
-  const sampleQRs = [
+  // Only real user QR code (Monginis), NO dummy samples!
+  const realQRs = [
     {
       id: 'qr_c304ca67-0',
       userId: demoUser.id,
@@ -74,163 +65,136 @@ function getInitialSeed() {
       scanCount: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    },
-    {
-      id: 'qr_sample_001',
-      userId: demoUser.id,
-      title: 'Company Website Homepage',
-      description: 'Official corporate website link for marketing brochures',
-      targetUrl: 'https://example.com/company',
-      shortCode: 'comp-web',
-      qrType: 'direct',
-      category: 'Marketing',
-      tags: ['website', 'corporate', 'marketing'],
-      designConfig: {
-        fgColor: '#1e3a8a',
-        bgColor: '#ffffff',
-        level: 'H',
-        margin: 2,
-        size: 256
-      },
-      scanCount: 142,
-      createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 2 * 86400000).toISOString()
-    },
-    {
-      id: 'qr_sample_002',
-      userId: demoUser.id,
-      title: 'Product Catalog PDF Download',
-      description: 'Direct link to latest 2026 digital product catalog and price list',
-      targetUrl: 'https://example.com/catalog-2026.pdf',
-      shortCode: 'cat-2026',
-      qrType: 'direct',
-      category: 'Product',
-      tags: ['catalog', 'pdf', 'pricing'],
-      designConfig: {
-        fgColor: '#047857',
-        bgColor: '#f0fdf4',
-        level: 'Q',
-        margin: 3,
-        size: 256
-      },
-      scanCount: 89,
-      createdAt: new Date(Date.now() - 4 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 1 * 86400000).toISOString()
-    },
-    {
-      id: 'qr_sample_003',
-      userId: demoUser.id,
-      title: 'Contact & Portfolio Linktree',
-      description: 'Personal social handles, GitHub, and portfolio showcase',
-      targetUrl: 'https://portfolio.example.com/alex',
-      shortCode: 'alex-folio',
-      qrType: 'direct',
-      category: 'Personal',
-      tags: ['portfolio', 'contact', 'bio'],
-      designConfig: {
-        fgColor: '#7c3aed',
-        bgColor: '#faf5ff',
-        level: 'M',
-        margin: 2,
-        size: 256
-      },
-      scanCount: 35,
-      createdAt: new Date(Date.now() - 1 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 1 * 86400000).toISOString()
     }
   ];
 
-  return { users: [demoUser], qrcodes: sampleQRs, scans: [] };
+  return {
+    isInitialized: true,
+    users: [demoUser],
+    qrcodes: realQRs,
+    scans: []
+  };
 }
 
-// Load database from disk or cloud
+// Track sync status
+let isLoaded = false;
+let loadPromise = null;
+
+// Load database from cloud (Vercel Blob) or local disk
 async function loadDB() {
-  // 1. Try Cloud KV / Redis if configured
-  if (redisClient) {
+  if (loadPromise) return loadPromise;
+
+  loadPromise = (async () => {
+    // 1. Try Vercel Blob cloud storage
+    if (vercelBlob && process.env.BLOB_READ_WRITE_TOKEN) {
+      try {
+        const { list } = vercelBlob;
+        const blobs = await list({ prefix: 'qr_system_database.json' });
+        if (blobs.blobs && blobs.blobs.length > 0) {
+          const downloadUrl = blobs.blobs[0].downloadUrl;
+          // Add timestamp cache buster
+          const res = await fetch(`${downloadUrl}?t=${Date.now()}`, { cache: 'no-store' });
+          if (res.ok) {
+            const cloudData = await res.json();
+            if (cloudData && typeof cloudData === 'object') {
+              db = {
+                isInitialized: true,
+                users: Array.isArray(cloudData.users) ? cloudData.users : [],
+                qrcodes: Array.isArray(cloudData.qrcodes) ? cloudData.qrcodes : [],
+                scans: Array.isArray(cloudData.scans) ? cloudData.scans : []
+              };
+              console.log(`[DB Cloud] Successfully loaded ${db.qrcodes.length} QR codes from Vercel Blob!`);
+              isLoaded = true;
+              return db;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[DB Cloud] Warning loading from Vercel Blob:', err.message);
+      }
+    }
+
+    // 2. Try Local disk file
     try {
-      const cloudData = await redisClient.get('qr_manager_database');
-      if (cloudData && typeof cloudData === 'object') {
+      if (fs.existsSync(DB_FILE)) {
+        const raw = fs.readFileSync(DB_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
         db = {
-          users: Array.isArray(cloudData.users) ? cloudData.users : [],
-          qrcodes: Array.isArray(cloudData.qrcodes) ? cloudData.qrcodes : [],
-          scans: Array.isArray(cloudData.scans) ? cloudData.scans : []
+          isInitialized: true,
+          users: Array.isArray(parsed.users) ? parsed.users : [],
+          qrcodes: Array.isArray(parsed.qrcodes) ? parsed.qrcodes : [],
+          scans: Array.isArray(parsed.scans) ? parsed.scans : []
         };
-        console.log(`[DB] Loaded ${db.users.length} users and ${db.qrcodes.length} QR codes from Vercel KV`);
-        return;
-      } else {
-        // Initialize cloud store with seed
-        db = getInitialSeed();
-        await redisClient.set('qr_manager_database', db);
-        console.log('[DB] Seeded initial data to Vercel KV');
-        return;
+        console.log(`[DB Local] Loaded ${db.qrcodes.length} QR codes from disk.`);
+        isLoaded = true;
+        return db;
       }
     } catch (err) {
-      console.warn('[DB] Error loading from cloud KV, falling back to disk/seed:', err.message);
+      console.warn('[DB Local] Warning loading disk file:', err.message);
     }
-  }
 
-  // 2. Local disk fallback
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
-      db = {
-        users: Array.isArray(parsed.users) ? parsed.users : [],
-        qrcodes: Array.isArray(parsed.qrcodes) ? parsed.qrcodes : [],
-        scans: Array.isArray(parsed.scans) ? parsed.scans : []
-      };
-      console.log(`[DB] Loaded ${db.users.length} users and ${db.qrcodes.length} QR codes from ${DB_FILE}`);
-    } else {
-      db = getInitialSeed();
-      saveDB();
-    }
-  } catch (err) {
-    console.error('[DB] Error loading database file, initializing default:', err);
-    db = getInitialSeed();
-    saveDB();
-  }
+    // 3. Fallback: Initialize clean seed
+    db = getCleanSeed();
+    isLoaded = true;
+    await saveDB();
+    return db;
+  })();
+
+  return loadPromise;
 }
 
-// Persist database changes to disk and/or cloud
+// Persist changes to Vercel Blob and local disk
 async function saveDB() {
-  // Sync to Cloud KV if available
-  if (redisClient) {
+  // 1. Persist to Vercel Blob Cloud
+  if (vercelBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      await redisClient.set('qr_manager_database', db);
+      const { put } = vercelBlob;
+      await put('qr_system_database.json', JSON.stringify(db, null, 2), {
+        access: 'public',
+        addRandomSuffix: false
+      });
+      console.log(`[DB Cloud] Persisted ${db.qrcodes.length} QR codes to Vercel Blob.`);
     } catch (err) {
-      console.warn('[DB] Failed to sync to cloud KV:', err.message);
+      console.error('[DB Cloud] Error persisting to Vercel Blob:', err.message);
     }
   }
 
-  // Sync to local disk
+  // 2. Persist to local disk
   try {
     const tempFile = `${DB_FILE}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), 'utf-8');
     fs.renameSync(tempFile, DB_FILE);
   } catch (err) {
-    // If running in a read-only serverless environment without cloud KV
     if (!isServerless) {
-      console.error('[DB] Error persisting database to disk:', err);
+      console.error('[DB Local] Error writing to disk:', err.message);
     }
   }
 }
 
-// Initial load
+// Start loading immediately
 loadDB();
 
 module.exports = {
+  // Ensure DB is ready before operations
+  async ensureReady() {
+    await loadDB();
+  },
+
   // User operations
-  findUserByEmail(email) {
+  async findUserByEmail(email) {
+    await loadDB();
     if (!email) return null;
     return db.users.find(u => u.email.toLowerCase() === email.toLowerCase()) || null;
   },
 
-  findUserById(id) {
+  async findUserById(id) {
+    await loadDB();
     if (!id) return null;
     return db.users.find(u => u.id === id) || null;
   },
 
-  createUser({ id, name, email, passwordHash }) {
+  async createUser({ id, name, email, passwordHash }) {
+    await loadDB();
     const newUser = {
       id,
       name,
@@ -239,13 +203,16 @@ module.exports = {
       createdAt: new Date().toISOString()
     };
     db.users.push(newUser);
-    saveDB();
+    await saveDB();
     return newUser;
   },
 
-  // QR Code operations
-  getQRCodes(userId, filters = {}) {
-    let list = db.qrcodes.filter(qr => qr.userId === userId);
+  // QR Code operations - SHARED across all users & browsers!
+  async getQRCodes(userId, filters = {}) {
+    await loadDB();
+
+    // Return the SHARED collection of QR codes so all users/friends see all QR codes!
+    let list = [...db.qrcodes];
 
     const { search, category, sortBy = 'createdAt', sortOrder = 'desc' } = filters;
 
@@ -274,7 +241,6 @@ module.exports = {
       if (sortBy === 'scanCount') {
         return sortOrder === 'asc' ? (a.scanCount || 0) - (b.scanCount || 0) : (b.scanCount || 0) - (a.scanCount || 0);
       }
-      // default date
       valA = new Date(valA || 0).getTime();
       valB = new Date(valB || 0).getTime();
       return sortOrder === 'asc' ? valA - valB : valB - valA;
@@ -283,19 +249,19 @@ module.exports = {
     return list;
   },
 
-  getQRCodeById(id, userId = null) {
-    const item = db.qrcodes.find(qr => qr.id === id);
-    if (!item) return null;
-    if (userId && item.userId !== userId) return null;
-    return item;
+  async getQRCodeById(id) {
+    await loadDB();
+    return db.qrcodes.find(qr => qr.id === id) || null;
   },
 
-  getQRCodeByShortCode(shortCode) {
+  async getQRCodeByShortCode(shortCode) {
+    await loadDB();
     if (!shortCode) return null;
     return db.qrcodes.find(qr => qr.shortCode === shortCode) || null;
   },
 
-  createQRCode(data) {
+  async createQRCode(data) {
+    await loadDB();
     const newQR = {
       id: data.id,
       userId: data.userId,
@@ -303,7 +269,7 @@ module.exports = {
       description: data.description || '',
       targetUrl: data.targetUrl, // Permanently stored association
       shortCode: data.shortCode,
-      qrType: data.qrType || 'direct', // Default to Direct URL for phone camera compatibility
+      qrType: data.qrType || 'direct', // Default to Direct URL for phone compatibility
       category: data.category || 'General',
       tags: Array.isArray(data.tags) ? data.tags : [],
       designConfig: data.designConfig || {
@@ -318,12 +284,13 @@ module.exports = {
       updatedAt: new Date().toISOString()
     };
     db.qrcodes.unshift(newQR);
-    saveDB();
+    await saveDB();
     return newQR;
   },
 
-  updateQRCode(id, userId, updates) {
-    const index = db.qrcodes.findIndex(qr => qr.id === id && qr.userId === userId);
+  async updateQRCode(id, updates) {
+    await loadDB();
+    const index = db.qrcodes.findIndex(qr => qr.id === id);
     if (index === -1) return null;
 
     const current = db.qrcodes[index];
@@ -331,25 +298,26 @@ module.exports = {
       ...current,
       ...updates,
       id: current.id,
-      userId: current.userId,
       shortCode: updates.shortCode || current.shortCode,
       updatedAt: new Date().toISOString()
     };
 
     db.qrcodes[index] = updated;
-    saveDB();
+    await saveDB();
     return updated;
   },
 
-  deleteQRCode(id, userId) {
-    const index = db.qrcodes.findIndex(qr => qr.id === id && qr.userId === userId);
+  async deleteQRCode(id) {
+    await loadDB();
+    const index = db.qrcodes.findIndex(qr => qr.id === id);
     if (index === -1) return false;
     db.qrcodes.splice(index, 1);
-    saveDB();
+    await saveDB();
     return true;
   },
 
-  recordScan(shortCode, clientInfo = {}) {
+  async recordScan(shortCode, clientInfo = {}) {
+    await loadDB();
     const qr = db.qrcodes.find(item => item.shortCode === shortCode);
     if (qr) {
       qr.scanCount = (qr.scanCount || 0) + 1;
@@ -362,19 +330,19 @@ module.exports = {
         ip: clientInfo.ip || '127.0.0.1'
       };
       db.scans.push(scanEntry);
-      saveDB();
+      await saveDB();
       return qr;
     }
     return null;
   },
 
-  getStats(userId) {
-    const userQRs = db.qrcodes.filter(qr => qr.userId === userId);
-    const totalQRs = userQRs.length;
-    const totalScans = userQRs.reduce((acc, curr) => acc + (curr.scanCount || 0), 0);
-    const categories = Array.from(new Set(userQRs.map(qr => qr.category || 'General')));
-    const dynamicQRs = userQRs.filter(qr => qr.qrType === 'dynamic').length;
-    const directQRs = userQRs.filter(qr => qr.qrType === 'direct').length;
+  async getStats() {
+    await loadDB();
+    const totalQRs = db.qrcodes.length;
+    const totalScans = db.qrcodes.reduce((acc, curr) => acc + (curr.scanCount || 0), 0);
+    const categories = Array.from(new Set(db.qrcodes.map(qr => qr.category || 'General')));
+    const dynamicQRs = db.qrcodes.filter(qr => qr.qrType === 'dynamic').length;
+    const directQRs = db.qrcodes.filter(qr => qr.qrType === 'direct').length;
 
     return {
       totalQRs,

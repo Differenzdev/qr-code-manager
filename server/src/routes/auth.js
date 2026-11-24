@@ -21,7 +21,7 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters long' });
     }
 
-    const existingUser = db.findUserByEmail(email.trim());
+    const existingUser = await db.findUserByEmail(email.trim());
     if (existingUser) {
       return res.status(409).json({ error: 'An account with this email already exists' });
     }
@@ -29,7 +29,7 @@ router.post('/register', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    const newUser = db.createUser({
+    const newUser = await db.createUser({
       id: 'usr_' + uuidv4().substring(0, 10),
       name: name.trim(),
       email: email.trim().toLowerCase(),
@@ -67,7 +67,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Please provide both email and password' });
     }
 
-    const user = db.findUserByEmail(email.trim());
+    const user = await db.findUserByEmail(email.trim());
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }

@@ -20,12 +20,12 @@ function generateShortCode() {
   return Math.random().toString(36).substring(2, 8);
 }
 
-// GET all QR codes for logged-in user (with search, category filter, sorting)
-router.get('/', requireAuth, (req, res) => {
+// GET all QR codes - SHARED collection across all users/browsers!
+router.get('/', requireAuth, async (req, res) => {
   try {
     const { search, category, sortBy, sortOrder } = req.query;
-    const qrcodes = db.getQRCodes(req.user.id, { search, category, sortBy, sortOrder });
-    const stats = db.getStats(req.user.id);
+    const qrcodes = await db.getQRCodes(req.user.id, { search, category, sortBy, sortOrder });
+    const stats = await db.getStats();
 
     res.json({
       success: true,
@@ -39,9 +39,9 @@ router.get('/', requireAuth, (req, res) => {
 });
 
 // GET stats overview
-router.get('/stats', requireAuth, (req, res) => {
+router.get('/stats', requireAuth, async (req, res) => {
   try {
-    const stats = db.getStats(req.user.id);
+    const stats = await db.getStats();
     res.json({ success: true, stats });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get stats' });
@@ -49,9 +49,9 @@ router.get('/stats', requireAuth, (req, res) => {
 });
 
 // GET single QR code by ID
-router.get('/:id', requireAuth, (req, res) => {
+router.get('/:id', requireAuth, async (req, res) => {
   try {
-    const qr = db.getQRCodeById(req.params.id, req.user.id);
+    const qr = await db.getQRCodeById(req.params.id);
     if (!qr) {
       return res.status(404).json({ error: 'QR Code not found' });
     }
@@ -70,7 +70,7 @@ router.post('/', requireAuth, async (req, res) => {
       targetUrl,
       category,
       tags,
-      qrType = 'dynamic',
+      qrType = 'direct',
       designConfig,
       customShortCode
     } = req.body;
@@ -88,20 +88,20 @@ router.post('/', requireAuth, async (req, res) => {
 
     let shortCode = customShortCode ? customShortCode.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '') : generateShortCode();
     // Check collision
-    if (db.getQRCodeByShortCode(shortCode)) {
+    if (await db.getQRCodeByShortCode(shortCode)) {
       shortCode = generateShortCode();
     }
 
     const id = 'qr_' + uuidv4().substring(0, 10);
 
-    const newQR = db.createQRCode({
+    const newQR = await db.createQRCode({
       id,
       userId: req.user.id,
       title: title && title.trim() ? title.trim() : 'QR Code - ' + new Date().toLocaleDateString(),
       description: description ? description.trim() : '',
       targetUrl: cleanUrl, // Permanently stored association
       shortCode,
-      qrType: qrType === 'direct' ? 'direct' : 'dynamic',
+      qrType: qrType === 'dynamic' ? 'dynamic' : 'direct',
       category: category && category.trim() ? category.trim() : 'General',
       tags: Array.isArray(tags) ? tags.map(t => t.trim()).filter(Boolean) : [],
       designConfig: designConfig || {
@@ -125,7 +125,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PUT Update an existing QR Code (URL, title, design, category)
-router.put('/:id', requireAuth, (req, res) => {
+router.put('/:id', requireAuth, async (req, res) => {
   try {
     const { title, description, targetUrl, category, tags, designConfig, qrType } = req.body;
 
@@ -147,9 +147,9 @@ router.put('/:id', requireAuth, (req, res) => {
       }
     }
 
-    const updated = db.updateQRCode(req.params.id, req.user.id, updates);
+    const updated = await db.updateQRCode(req.params.id, updates);
     if (!updated) {
-      return res.status(404).json({ error: 'QR Code not found or access denied' });
+      return res.status(404).json({ error: 'QR Code not found' });
     }
 
     res.json({
@@ -164,9 +164,9 @@ router.put('/:id', requireAuth, (req, res) => {
 });
 
 // DELETE a QR Code
-router.delete('/:id', requireAuth, (req, res) => {
+router.delete('/:id', requireAuth, async (req, res) => {
   try {
-    const deleted = db.deleteQRCode(req.params.id, req.user.id);
+    const deleted = await db.deleteQRCode(req.params.id);
     if (!deleted) {
       return res.status(404).json({ error: 'QR Code not found' });
     }
@@ -177,14 +177,14 @@ router.delete('/:id', requireAuth, (req, res) => {
 });
 
 // POST Duplicate QR Code
-router.post('/:id/duplicate', requireAuth, (req, res) => {
+router.post('/:id/duplicate', requireAuth, async (req, res) => {
   try {
-    const source = db.getQRCodeById(req.params.id, req.user.id);
+    const source = await db.getQRCodeById(req.params.id);
     if (!source) {
       return res.status(404).json({ error: 'Source QR Code not found' });
     }
 
-    const newQR = db.createQRCode({
+    const newQR = await db.createQRCode({
       id: 'qr_' + uuidv4().substring(0, 10),
       userId: req.user.id,
       title: `${source.title} (Copy)`,
@@ -211,7 +211,7 @@ router.post('/:id/duplicate', requireAuth, (req, res) => {
 router.get('/:id/download', async (req, res) => {
   try {
     const { format = 'png', size = 512, filename } = req.query;
-    const qr = db.getQRCodeById(req.params.id);
+    const qr = await db.getQRCodeById(req.params.id);
     if (!qr) {
       return res.status(404).send('QR Code not found');
     }
@@ -253,9 +253,9 @@ router.get('/:id/download', async (req, res) => {
 });
 
 // GET Public view data for sharing a QR code
-router.get('/public/:id', (req, res) => {
+router.get('/public/:id', async (req, res) => {
   try {
-    const qr = db.getQRCodeById(req.params.id);
+    const qr = await db.getQRCodeById(req.params.id);
     if (!qr) {
       return res.status(404).json({ error: 'Shared QR Code not found' });
     }

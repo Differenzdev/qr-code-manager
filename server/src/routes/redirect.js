@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../db');
 
 // Redirect endpoint for dynamic QR codes: /r/:shortCode
-router.get('/:shortCode', (req, res) => {
+router.get('/:shortCode', async (req, res) => {
   try {
     const { shortCode } = req.params;
     const clientInfo = {
@@ -11,7 +11,7 @@ router.get('/:shortCode', (req, res) => {
       userAgent: req.get('user-agent') || 'Unknown'
     };
 
-    const qr = db.recordScan(shortCode, clientInfo);
+    const qr = await db.recordScan(shortCode, clientInfo);
 
     if (!qr || !qr.targetUrl) {
       return res.status(404).send(`
