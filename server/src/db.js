@@ -76,41 +76,54 @@ function getCleanSeed() {
   };
 }
 
-// Track sync status
-let isLoaded = false;
-let loadPromise = null;
+// Track concurrent load
+let activeLoadPromise = null;
+const BLOB_PREFIX = 'qr_db/state_';
 
 // Load database from cloud (Vercel Blob) or local disk
+// Uses immutable timestamped blob keys so CDN never serves stale cached reads
 async function loadDB() {
-  if (loadPromise) return loadPromise;
+  if (activeLoadPromise) return activeLoadPromise;
 
-  loadPromise = (async () => {
+  activeLoadPromise = (async () => {
     // 1. Try Vercel Blob cloud storage
     if (vercelBlob && process.env.BLOB_READ_WRITE_TOKEN) {
-      try {
-        const { list } = vercelBlob;
-        const blobs = await list({ prefix: 'qr_system_database.json' });
-        if (blobs.blobs && blobs.blobs.length > 0) {
-          const downloadUrl = blobs.blobs[0].downloadUrl;
-          // Add timestamp cache buster
-          const res = await fetch(`${downloadUrl}?t=${Date.now()}`, { cache: 'no-store' });
-          if (res.ok) {
-            const cloudData = await res.json();
-            if (cloudData && typeof cloudData === 'object') {
-              db = {
-                isInitialized: true,
-                users: Array.isArray(cloudData.users) ? cloudData.users : [],
-                qrcodes: Array.isArray(cloudData.qrcodes) ? cloudData.qrcodes : [],
-                scans: Array.isArray(cloudData.scans) ? cloudData.scans : []
-              };
-              console.log(`[DB Cloud] Successfully loaded ${db.qrcodes.length} QR codes from Vercel Blob!`);
-              isLoaded = true;
-              return db;
-            }
-          }
+      const { list } = vercelBlob;
+      const blobsResult = await list({ prefix: BLOB_PREFIX });
+      let targetBlob = null;
+
+      if (blobsResult.blobs && blobsResult.blobs.length > 0) {
+        // Sort newest first by pathname (zero-padded ms timestamp) then uploadedAt
+        const sorted = [...blobsResult.blobs].sort((a, b) =>
+          b.pathname.localeCompare(a.pathname) || new Date(b.uploadedAt) - new Date(a.uploadedAt)
+        );
+        targetBlob = sorted[0];
+      } else {
+        // Check legacy single-file blob for one-time migration
+        const legacy = await list({ prefix: 'qr_system_database.json' });
+        targetBlob = legacy.blobs?.find(b => b.pathname === 'qr_system_database.json') || legacy.blobs?.[0] || null;
+      }
+
+      if (targetBlob) {
+        const res = await fetch(targetBlob.downloadUrl, { cache: 'no-store' });
+        if (!res.ok) {
+          throw new Error(`Failed to fetch blob: HTTP ${res.status}`);
         }
-      } catch (err) {
-        console.warn('[DB Cloud] Warning loading from Vercel Blob:', err.message);
+        const cloudData = await res.json();
+        if (cloudData && typeof cloudData === 'object') {
+          db = {
+            isInitialized: true,
+            users: Array.isArray(cloudData.users) ? cloudData.users : [],
+            qrcodes: Array.isArray(cloudData.qrcodes) ? cloudData.qrcodes : [],
+            scans: Array.isArray(cloudData.scans) ? cloudData.scans : []
+          };
+          return db;
+        }
+      } else {
+        // No blob exists yet in cloud -> initialize clean seed and upload
+        db = getCleanSeed();
+        await saveDB();
+        return db;
       }
     }
 
@@ -126,7 +139,6 @@ async function loadDB() {
           scans: Array.isArray(parsed.scans) ? parsed.scans : []
         };
         console.log(`[DB Local] Loaded ${db.qrcodes.length} QR codes from disk.`);
-        isLoaded = true;
         return db;
       }
     } catch (err) {
@@ -135,27 +147,43 @@ async function loadDB() {
 
     // 3. Fallback: Initialize clean seed
     db = getCleanSeed();
-    isLoaded = true;
     await saveDB();
     return db;
   })();
 
-  return loadPromise;
+  try {
+    return await activeLoadPromise;
+  } finally {
+    activeLoadPromise = null;
+  }
 }
 
 // Persist changes to Vercel Blob and local disk
 async function saveDB() {
-  // 1. Persist to Vercel Blob Cloud
+  // 1. Persist to Vercel Blob Cloud with a unique immutable pathname
   if (vercelBlob && process.env.BLOB_READ_WRITE_TOKEN) {
+    const { put, list, del } = vercelBlob;
+    const key = `${BLOB_PREFIX}${String(Date.now()).padStart(15, '0')}.json`;
+    await put(key, JSON.stringify(db, null, 2), {
+      access: 'public',
+      addRandomSuffix: true
+    });
+    console.log(`[DB Cloud] Persisted ${db.qrcodes.length} QR codes to Vercel Blob (${key}).`);
+
+    // Prune older snapshots, keeping the 2 most recent
     try {
-      const { put } = vercelBlob;
-      await put('qr_system_database.json', JSON.stringify(db, null, 2), {
-        access: 'public',
-        addRandomSuffix: false
-      });
-      console.log(`[DB Cloud] Persisted ${db.qrcodes.length} QR codes to Vercel Blob.`);
-    } catch (err) {
-      console.error('[DB Cloud] Error persisting to Vercel Blob:', err.message);
+      const blobsResult = await list({ prefix: BLOB_PREFIX });
+      if (blobsResult.blobs && blobsResult.blobs.length > 2) {
+        const sorted = [...blobsResult.blobs].sort((a, b) =>
+          b.pathname.localeCompare(a.pathname) || new Date(b.uploadedAt) - new Date(a.uploadedAt)
+        );
+        const staleUrls = sorted.slice(2).map(b => b.url);
+        if (staleUrls.length > 0) {
+          await del(staleUrls);
+        }
+      }
+    } catch (pruneErr) {
+      console.warn('[DB Cloud] Non-fatal prune warning:', pruneErr.message);
     }
   }
 
